@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "app": "freescout",
+  "theme": "Northwind Outdoor Gear shared helpdesk",
+  "seed_command": "./tester-env seed",
+  "verify_command": "./tester-env verify",
+  "reset_command": "./tester-env reset",
+  "credentials": {
+    "admin": "admin@tester-env.local / TesterEnv123!",
+    "agents": [
+      "mia.chen@tester-env.local / TesterEnv123!",
+      "noah.patel@tester-env.local / TesterEnv123!",
+      "olivia.reed@tester-env.local / TesterEnv123!"
+    ]
+  },
+  "requirements": {
+    "mailboxes": {
+      "status": "present",
+      "evidence": "Seed creates Northwind Support, Northwind Billing, and Northwind Returns mailboxes."
+    },
+    "agents": {
+      "status": "present",
+      "evidence": "Seed creates three active agents: Mia Chen, Noah Patel, and Olivia Reed."
+    },
+    "customers": {
+      "status": "present",
+      "evidence": "Seed creates six customers with companies and distinctive email addresses."
+    },
+    "conversations": {
+      "status": "present",
+      "evidence": "Seed creates eight conversations with stable numbers 7001-7008 and fixed 2026 dates."
+    },
+    "varied_statuses": {
+      "status": "present",
+      "evidence": "Conversation counts are 3 active, 2 pending, 2 closed, and 1 spam."
+    },
+    "visible_assertions": {
+      "status": "needs_browser_verification",
+      "evidence": "CLI verify checks DB counts and rendered mailbox list; browser-checker should confirm populated dashboard/list/detail visibility."
+    }
+  }
+}

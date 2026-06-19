@@ -1,0 +1,48 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${IMAGE_TAG:-tester-env-freescout:dev}
+    container_name: ${CONTAINER_NAME:-tester-env-freescout}
+    ports:
+      - "${PORT:-8042}:80"
+    volumes:
+      - .:/var/www/html
+      - freescout-storage:/var/www/html/storage
+    environment:
+      - APP_URL=${APP_URL:-http://host.docker.internal:8042}
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_DATABASE=freescout
+      - DB_USERNAME=freescout
+      - DB_PASSWORD=freescout
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@tester-env.local}
+      - ADMIN_PASS=${ADMIN_PASS:-TesterEnv123!}
+      - ADMIN_FIRST=${ADMIN_FIRST:-Admin}
+      - ADMIN_LAST=${ADMIN_LAST:-User}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: mariadb:10.11
+    container_name: ${CONTAINER_NAME:-tester-env-freescout}-db
+    environment:
+      - MARIADB_ROOT_PASSWORD=freescout-root
+      - MARIADB_DATABASE=freescout
+      - MARIADB_USER=freescout
+      - MARIADB_PASSWORD=freescout
+    volumes:
+      - freescout-db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mariadb-admin", "ping", "-h", "localhost", "-u", "freescout", "-pfreescout", "--silent"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  freescout-storage:
+  freescout-db-data:

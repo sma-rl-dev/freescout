@@ -1,0 +1,230 @@
+#!/bin/bash
+# FreeScout tester-env CLI
+# IMAGE_TAG set by scripts/rl-env to a content-addressed tag so identical
+# (baseline, patch-set) combos share an image. Manual invocations get :dev.
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
+IMAGE_NAME="${IMAGE_TAG:-tester-env-freescout:dev}"
+CONTAINER_NAME="${CONTAINER_NAME:-tester-env-freescout}"
+PORT="${PORT:-8042}"
+DB_VOLUME="freescout-db-data"
+STORAGE_VOLUME="freescout-storage"
+COMPOSE_PROJECT="freescout"
+
+# Credentials
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@tester-env.local}"
+ADMIN_PASS="${ADMIN_PASS:-TesterEnv123!}"
+
+usage() {
+    cat <<EOF
+Usage: $0 {deploy|seed|verify|reset|stop|logs|status|help}
+
+Commands:
+  deploy   Build image from source, start containers, initialize app
+  seed     Populate deterministic Northwind Outdoor Gear helpdesk data
+  verify   Check deterministic seed counts and key rendered pages
+  reset    Stop containers, remove volumes, return to clean slate
+  stop     Stop containers (preserves data)
+  logs     Tail container logs (app + db)
+  status   Show whether app is running and on what port
+  help     Show this message
+
+Environment:
+  IMAGE_TAG       Docker image tag (default: tester-env-freescout:dev)
+  CONTAINER_NAME  Container name (default: tester-env-freescout)
+  PORT            Host port (default: 8042)
+  ADMIN_EMAIL     Admin email (default: admin@tester-env.local)
+  ADMIN_PASS      Admin password (default: TesterEnv123!)
+
+Credentials:
+  URL:      http://localhost:${PORT}
+  Email:    ${ADMIN_EMAIL}
+  Password: ${ADMIN_PASS}
+EOF
+}
+
+cmd_deploy() {
+    echo "==> Building FreeScout image: ${IMAGE_NAME}"
+    IMAGE_TAG="${IMAGE_NAME}" CONTAINER_NAME="${CONTAINER_NAME}" PORT="${PORT}" \
+        docker compose -f "${COMPOSE_FILE}" -p "${COMPOSE_PROJECT}" build app
+
+    echo "==> Starting FreeScout..."
+    IMAGE_TAG="${IMAGE_NAME}" CONTAINER_NAME="${CONTAINER_NAME}" PORT="${PORT}" \
+        ADMIN_EMAIL="${ADMIN_EMAIL}" ADMIN_PASS="${ADMIN_PASS}" \
+        docker compose -f "${COMPOSE_FILE}" -p "${COMPOSE_PROJECT}" up -d
+
+    echo "==> Waiting for FreeScout to be ready (up to 60s)..."
+    for i in $(seq 1 60); do
+        if curl -s -o /dev/null -w "%{http_code}" "http://localhost:${PORT}/login" 2>/dev/null | grep -q "200\|302"; then
+            echo "==> FreeScout ready at http://localhost:${PORT}"
+            echo "    Admin: ${ADMIN_EMAIL} / ${ADMIN_PASS}"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "==> Warning: FreeScout did not respond within 60s. Check logs."
+    return 1
+}
+
+cmd_reset() {
+    echo "==> Stopping FreeScout containers and removing volumes..."
+    IMAGE_TAG="${IMAGE_NAME}" CONTAINER_NAME="${CONTAINER_NAME}" PORT="${PORT}" \
+        docker compose -f "${COMPOSE_FILE}" -p "${COMPOSE_PROJECT}" down -v 2>/dev/null || true
+    # Clean .env so next deploy initializes fresh
+    rm -f "${SCRIPT_DIR}/.env"
+    echo "==> Reset complete. Run '$0 deploy' for a fresh start."
+}
+
+cmd_seed() {
+    echo "==> Seeding deterministic FreeScout helpdesk data..."
+    if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+        echo "==> FreeScout container is not running. Run '$0 deploy' first."
+        return 1
+    fi
+
+    docker exec -i -u www-data "${CONTAINER_NAME}" php <<'PHP'
+<?php
+chdir('/var/www/html');
+define('LARAVEL_START', microtime(true));
+if (!function_exists('e')) {
+    function e($value, $doubleEncode = false) {
+        if ($value instanceof Illuminate\Contracts\Support\Htmlable) {
+            return $value->toHtml();
+        }
+        return htmlspecialchars($value ?? '', ENT_QUOTES, 'UTF-8', $doubleEncode);
+    }
+}
+require 'vendor/autoload.php';
+$app = require 'bootstrap/app.php';
+$kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
+$kernel->bootstrap();
+require 'database/seeds/TesterEnvSeeder.php';
+try {
+    (new TesterEnvSeeder())->run();
+} catch (Throwable $e) {
+    fwrite(fopen('php://stderr', 'w'), $e->getMessage()."\n");
+    exit(1);
+}
+PHP
+    echo "==> Seed complete. Created 3 mailboxes, 6 customers, 3 agents, and 8 conversations."
+}
+
+cmd_verify() {
+    echo "==> Verifying deterministic FreeScout seed data..."
+    if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+        echo "==> FreeScout container is not running. Run '$0 deploy' first."
+        return 1
+    fi
+
+    docker exec -i -u www-data "${CONTAINER_NAME}" php <<'PHP'
+<?php
+chdir('/var/www/html');
+define('LARAVEL_START', microtime(true));
+if (!function_exists('e')) {
+    function e($value, $doubleEncode = false) {
+        if ($value instanceof Illuminate\Contracts\Support\Htmlable) {
+            return $value->toHtml();
+        }
+        return htmlspecialchars($value ?? '', ENT_QUOTES, 'UTF-8', $doubleEncode);
+    }
+}
+require 'vendor/autoload.php';
+$app = require 'bootstrap/app.php';
+$kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
+$kernel->bootstrap();
+
+$checks = [
+    'mailboxes' => [DB::table('mailboxes')->count(), 3],
+    'customers' => [DB::table('customers')->count(), 6],
+    'agents' => [DB::table('users')->where('role', App\User::ROLE_USER)->count(), 3],
+    'conversations' => [DB::table('conversations')->count(), 8],
+    'active_conversations' => [DB::table('conversations')->where('status', App\Conversation::STATUS_ACTIVE)->count(), 3],
+    'pending_conversations' => [DB::table('conversations')->where('status', App\Conversation::STATUS_PENDING)->count(), 2],
+    'closed_conversations' => [DB::table('conversations')->where('status', App\Conversation::STATUS_CLOSED)->count(), 2],
+    'spam_conversations' => [DB::table('conversations')->where('status', App\Conversation::STATUS_SPAM)->count(), 1],
+];
+
+foreach ($checks as $name => $check) {
+    if ($check[0] !== $check[1]) {
+        fwrite(fopen('php://stderr', 'w'), "Seed verify failed for {$name}: expected {$check[1]}, got {$check[0]}\n");
+        exit(1);
+    }
+}
+
+$subjects = [
+    'Expedite replacement tent poles before Friday',
+    'Update billing contact for Harbor Cafe Group',
+    'Warranty exchange for RidgeLine GPS beacon',
+];
+foreach ($subjects as $subject) {
+    if (!DB::table('conversations')->where('subject', $subject)->exists()) {
+        fwrite(fopen('php://stderr', 'w'), "Seed verify failed; missing conversation subject: {$subject}\n");
+        exit(1);
+    }
+}
+
+echo "DB seed counts OK: 3 mailboxes, 6 customers, 3 agents, 8 conversations (3 active, 2 pending, 2 closed, 1 spam).\n";
+PHP
+
+    local cookie token page
+    cookie="$(mktemp)"
+    page="$(mktemp)"
+    curl -fsS -c "${cookie}" "http://localhost:${PORT}/login" -o "${page}"
+    token="$(sed -n 's/.*name="_token" value="\([^"]*\)".*/\1/p' "${page}")"
+    if [ -z "${token}" ]; then
+        echo "==> Could not extract CSRF token from login page."
+        rm -f "${cookie}" "${page}"
+        return 1
+    fi
+    curl -fsS -b "${cookie}" -c "${cookie}" -X POST "http://localhost:${PORT}/login" \
+        --data-urlencode "_token=${token}" \
+        --data-urlencode "email=${ADMIN_EMAIL}" \
+        --data-urlencode "password=${ADMIN_PASS}" \
+        -o /dev/null
+    curl -fsS -b "${cookie}" "http://localhost:${PORT}/mailboxes" -o "${page}"
+    for text in "Northwind Support" "Northwind Billing" "Northwind Returns"; do
+        if ! grep -q "${text}" "${page}"; then
+            echo "==> Rendered mailboxes page missing '${text}'."
+            rm -f "${cookie}" "${page}"
+            return 1
+        fi
+    done
+    rm -f "${cookie}" "${page}"
+    echo "==> Rendered mailbox list includes all seeded mailbox names."
+}
+
+cmd_stop() {
+    echo "==> Stopping FreeScout containers (preserving data)..."
+    IMAGE_TAG="${IMAGE_NAME}" CONTAINER_NAME="${CONTAINER_NAME}" PORT="${PORT}" \
+        docker compose -f "${COMPOSE_FILE}" -p "${COMPOSE_PROJECT}" stop 2>/dev/null || true
+    echo "==> Stopped."
+}
+
+cmd_logs() {
+    IMAGE_TAG="${IMAGE_NAME}" CONTAINER_NAME="${CONTAINER_NAME}" PORT="${PORT}" \
+        docker compose -f "${COMPOSE_FILE}" -p "${COMPOSE_PROJECT}" logs --tail=100 -f
+}
+
+cmd_status() {
+    if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+        echo "==> FreeScout running at http://localhost:${PORT}"
+        echo "    Admin: ${ADMIN_EMAIL} / ${ADMIN_PASS}"
+        return 0
+    else
+        echo "==> FreeScout not running."
+        return 1
+    fi
+}
+
+case "${1:-help}" in
+    deploy)  cmd_deploy ;;
+    seed)    cmd_seed ;;
+    verify)  cmd_verify ;;
+    reset)   cmd_reset ;;
+    stop)    cmd_stop ;;
+    logs)    cmd_logs ;;
+    status)  cmd_status ;;
+    help|*)  usage ;;
+esac
