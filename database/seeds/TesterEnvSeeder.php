@@ -24,10 +24,7 @@ class TesterEnvSeeder extends Seeder
             $mailboxes = $this->createMailboxes();
             $customers = $this->createCustomers();
 
-            foreach ($mailboxes as $mailbox) {
-                $mailbox->users()->sync([$admin->id, $agents['mia']->id, $agents['noah']->id]);
-                $mailbox->syncPersonalFolders([$admin->id, $agents['mia']->id, $agents['noah']->id]);
-            }
+            $this->assignMailboxAccess($admin, $agents, $mailboxes);
 
             $this->createConversations($mailboxes, $customers, $agents);
 
@@ -86,9 +83,9 @@ class TesterEnvSeeder extends Seeder
     private function createAgents()
     {
         $rows = [
-            'mia' => ['Mia', 'Chen', 'mia.chen@tester-env.local', 'Escalation Specialist'],
-            'noah' => ['Noah', 'Patel', 'noah.patel@tester-env.local', 'Returns Coordinator'],
-            'olivia' => ['Olivia', 'Reed', 'olivia.reed@tester-env.local', 'Billing Analyst'],
+            'mia' => ['Mia', 'Chen', 'mia.chen@tester-env.local', 'Escalation Specialist', [User::PERM_DELETE_CONVERSATIONS => 1]],
+            'noah' => ['Noah', 'Patel', 'noah.patel@tester-env.local', 'Returns Coordinator', [User::PERM_DELETE_CONVERSATIONS => 1, User::PERM_ONLY_ASSIGNED_TICKETS => 1]],
+            'olivia' => ['Olivia', 'Reed', 'olivia.reed@tester-env.local', 'Billing Analyst', []],
         ];
 
         $agents = [];
@@ -106,6 +103,9 @@ class TesterEnvSeeder extends Seeder
                 'invite_state' => User::INVITE_STATE_ACTIVATED,
                 'created_at' => '2026-06-01 09:00:00',
                 'updated_at' => '2026-06-01 09:00:00',
+            ]);
+            DB::table('users')->where('id', $agents[$key]->id)->update([
+                'permissions' => $row[4] ? json_encode($row[4]) : null,
             ]);
         }
 
@@ -136,6 +136,30 @@ class TesterEnvSeeder extends Seeder
         }
 
         return $mailboxes;
+    }
+
+    private function assignMailboxAccess($admin, $agents, $mailboxes)
+    {
+        $assignments = [
+            'support' => [
+                $admin->id => [],
+                $agents['mia']->id => ['access' => json_encode([Mailbox::ACCESS_PERM_SIGNATURE])],
+                $agents['noah']->id => [],
+            ],
+            'returns' => [
+                $admin->id => [],
+                $agents['noah']->id => [],
+            ],
+            'billing' => [
+                $admin->id => [],
+                $agents['olivia']->id => [],
+            ],
+        ];
+
+        foreach ($assignments as $mailboxKey => $users) {
+            $mailboxes[$mailboxKey]->users()->sync($users);
+            $mailboxes[$mailboxKey]->syncPersonalFolders(array_keys($users));
+        }
     }
 
     private function createCustomers()
@@ -178,8 +202,8 @@ class TesterEnvSeeder extends Seeder
     {
         $definitions = [
             ['support', 'avery', 'mia', Conversation::STATUS_ACTIVE, 'Expedite replacement tent poles before Friday', 'Customer needs replacement tent poles for the Summit Cycles demo booth before the Friday trail expo.', '2026-06-10 14:20:00'],
-            ['support', 'sophia', null, Conversation::STATUS_ACTIVE, 'Freight delay on showroom order NW-1048', 'Brightpath Logistics reports the showroom order is stalled at the regional freight terminal.', '2026-06-09 10:15:00'],
             ['billing', 'jamie', 'olivia', Conversation::STATUS_PENDING, 'Update billing contact for Harbor Cafe Group', 'Please move all renewal notices to finance@harbor-cafe.example after the June invoice closes.', '2026-06-08 16:45:00'],
+            ['support', 'sophia', null, Conversation::STATUS_ACTIVE, 'Freight delay on showroom order NW-1048', 'Brightpath Logistics reports the showroom order is stalled at the regional freight terminal.', '2026-06-09 10:15:00'],
             ['billing', 'priya', null, Conversation::STATUS_CLOSED, 'Paid invoice INV-2026-041 needs receipt', 'Cedar Schools requested a receipt for paid invoice INV-2026-041; receipt was sent and ticket closed.', '2026-05-29 11:30:00'],
             ['returns', 'taylor', 'noah', Conversation::STATUS_ACTIVE, 'Warranty exchange for RidgeLine GPS beacon', 'Warranty exchange requested for GPS beacon serial RL-7781 after battery compartment failure.', '2026-06-07 09:05:00'],
             ['returns', 'marco', null, Conversation::STATUS_PENDING, 'Return label for damaged rental stove kit', 'Blue Peak Rentals needs a prepaid return label for stove kit SKU STOVE-24 with cracked burner housing.', '2026-06-05 13:00:00'],
@@ -239,6 +263,11 @@ class TesterEnvSeeder extends Seeder
                 'updated_at' => $createdAt,
             ]);
             $thread->save();
+
+            DB::table('conversations')->where('id', $conversation->id)->update([
+                'number' => $number,
+                'updated_at' => $createdAt,
+            ]);
 
             if ($number === 7001) {
                 $starred = Folder::where('mailbox_id', $mailbox->id)

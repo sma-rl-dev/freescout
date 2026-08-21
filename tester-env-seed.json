@@ -20,7 +20,7 @@
     },
     "agents": {
       "status": "present",
-      "evidence": "Seed creates three active agents: Mia Chen, Noah Patel, and Olivia Reed."
+      "evidence": "Seed creates three active agents: Mia Chen, Noah Patel, and Olivia Reed; Mia and Noah can delete conversations, and Noah has assigned-only visibility."
     },
     "customers": {
       "status": "present",
@@ -37,6 +37,42 @@
     "visible_assertions": {
       "status": "needs_browser_verification",
       "evidence": "CLI verify checks DB counts and rendered mailbox list; browser-checker should confirm populated dashboard/list/detail visibility."
+    },
+    "assigned-only-agent": {
+      "status": "present",
+      "evidence": "Noah Patel has User::PERM_ONLY_ASSIGNED_TICKETS and can sign in with noah.patel@tester-env.local / TesterEnv123!."
+    },
+    "assigned-search-fixtures": {
+      "status": "present",
+      "evidence": "The term 'replacement' matches ticket 7001 assigned to Mia Chen and ticket 7008 assigned to assigned-only agent Noah Patel."
+    },
+    "nonadmin-delete-permission": {
+      "status": "present",
+      "evidence": "Mia Chen and Noah Patel have User::PERM_DELETE_CONVERSATIONS, so a non-admin agent can use conversation delete actions."
+    },
+    "delete-forever-enabled": {
+      "status": "present",
+      "evidence": "Admin Alex Admin has conversation delete policy access; seeded conversations can be moved to Deleted and permanently deleted after each reset."
+    },
+    "cross-mailbox-agent-access": {
+      "status": "present",
+      "evidence": "Mia Chen is assigned to Northwind Support ticket 7001 and has Support access, but she has no Northwind Returns mailbox access."
+    },
+    "move-conversation-permission": {
+      "status": "present",
+      "evidence": "Admin Alex Admin can move conversations between Northwind Support, Billing, and Returns; the seed includes all three mailboxes."
+    },
+    "nonadmin-mailbox-signature-manager": {
+      "status": "present",
+      "evidence": "Mia Chen has Northwind Support mailbox access with the signature-management permission."
+    },
+    "number-id-mismatch": {
+      "status": "present",
+      "evidence": "Visible ticket numbers are fixed at 7001-7008 while database ids are auto-incrementing internal ids, so numeric search ambiguity is observable."
+    },
+    "mailboxes-nonalphabetical-creation": {
+      "status": "present",
+      "evidence": "Mailboxes are created in Support, Billing, Returns order, which differs from alphabetical Billing, Returns, Support order."
     }
   }
 }

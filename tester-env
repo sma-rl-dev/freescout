@@ -9,6 +9,10 @@ COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
 IMAGE_NAME="${IMAGE_TAG:-tester-env-freescout:dev}"
 CONTAINER_NAME="${CONTAINER_NAME:-tester-env-freescout}"
 PORT="${PORT:-8042}"
+# Compute APP_URL from PORT so scenario runtime with --port auto works.
+# When scripts/rl-env allocates a random port, APP_URL must match so auth
+# redirects, CSP headers, and asset URLs all use the correct port.
+APP_URL="${APP_URL:-http://host.docker.internal:${PORT}}"
 DB_VOLUME="freescout-db-data"
 STORAGE_VOLUME="freescout-storage"
 COMPOSE_PROJECT="freescout"
@@ -35,11 +39,12 @@ Environment:
   IMAGE_TAG       Docker image tag (default: tester-env-freescout:dev)
   CONTAINER_NAME  Container name (default: tester-env-freescout)
   PORT            Host port (default: 8042)
+  APP_URL         Application URL for redirects/CSP/assets (default: http://host.docker.internal:${PORT})
   ADMIN_EMAIL     Admin email (default: admin@tester-env.local)
   ADMIN_PASS      Admin password (default: TesterEnv123!)
 
 Credentials:
-  URL:      http://localhost:${PORT}
+  URL:      ${APP_URL}
   Email:    ${ADMIN_EMAIL}
   Password: ${ADMIN_PASS}
 EOF
@@ -47,11 +52,11 @@ EOF
 
 cmd_deploy() {
     echo "==> Building FreeScout image: ${IMAGE_NAME}"
-    IMAGE_TAG="${IMAGE_NAME}" CONTAINER_NAME="${CONTAINER_NAME}" PORT="${PORT}" \
+    IMAGE_TAG="${IMAGE_NAME}" CONTAINER_NAME="${CONTAINER_NAME}" PORT="${PORT}" APP_URL="${APP_URL}" \
         docker compose -f "${COMPOSE_FILE}" -p "${COMPOSE_PROJECT}" build app
 
     echo "==> Starting FreeScout..."
-    IMAGE_TAG="${IMAGE_NAME}" CONTAINER_NAME="${CONTAINER_NAME}" PORT="${PORT}" \
+    IMAGE_TAG="${IMAGE_NAME}" CONTAINER_NAME="${CONTAINER_NAME}" PORT="${PORT}" APP_URL="${APP_URL}" \
         ADMIN_EMAIL="${ADMIN_EMAIL}" ADMIN_PASS="${ADMIN_PASS}" \
         docker compose -f "${COMPOSE_FILE}" -p "${COMPOSE_PROJECT}" up -d
 
@@ -70,7 +75,7 @@ cmd_deploy() {
 
 cmd_reset() {
     echo "==> Stopping FreeScout containers and removing volumes..."
-    IMAGE_TAG="${IMAGE_NAME}" CONTAINER_NAME="${CONTAINER_NAME}" PORT="${PORT}" \
+    IMAGE_TAG="${IMAGE_NAME}" CONTAINER_NAME="${CONTAINER_NAME}" PORT="${PORT}" APP_URL="${APP_URL}" \
         docker compose -f "${COMPOSE_FILE}" -p "${COMPOSE_PROJECT}" down -v 2>/dev/null || true
     # Clean .env so next deploy initializes fresh
     rm -f "${SCRIPT_DIR}/.env"
@@ -108,7 +113,7 @@ try {
     exit(1);
 }
 PHP
-    echo "==> Seed complete. Created 3 mailboxes, 6 customers, 3 agents, and 8 conversations."
+    echo "==> Seed complete. Created 3 mailboxes, 6 customers, 3 agents, 8 conversations, and scenario permissions."
 }
 
 cmd_verify() {
@@ -164,8 +169,63 @@ foreach ($subjects as $subject) {
         exit(1);
     }
 }
+if (!DB::table('conversations')->where('number', 7001)->where('subject', 'Expedite replacement tent poles before Friday')->exists()
+    || !DB::table('conversations')->where('number', 7002)->where('subject', 'Update billing contact for Harbor Cafe Group')->exists()
+    || !DB::table('conversations')->where('number', 7003)->where('subject', 'Freight delay on showroom order NW-1048')->exists()) {
+    fwrite(fopen('php://stderr', 'w'), "Seed verify failed; expected fixed visible ticket numbers 7001-7003.\n");
+    exit(1);
+}
 
-echo "DB seed counts OK: 3 mailboxes, 6 customers, 3 agents, 8 conversations (3 active, 2 pending, 2 closed, 1 spam).\n";
+$mia = App\User::where('email', 'mia.chen@tester-env.local')->first();
+$noah = App\User::where('email', 'noah.patel@tester-env.local')->first();
+$support = App\Mailbox::where('name', 'Northwind Support')->first();
+$returns = App\Mailbox::where('name', 'Northwind Returns')->first();
+$billing = App\Mailbox::where('name', 'Northwind Billing')->first();
+if (!$mia || !$noah || !$support || !$returns || !$billing) {
+    fwrite(fopen('php://stderr', 'w'), "Seed verify failed; missing scenario user or mailbox fixtures.\n");
+    exit(1);
+}
+if (!$mia->hasPermission(App\User::PERM_DELETE_CONVERSATIONS) || !$noah->hasPermission(App\User::PERM_DELETE_CONVERSATIONS)) {
+    fwrite(fopen('php://stderr', 'w'), "Seed verify failed; expected non-admin delete-conversation permission.\n");
+    exit(1);
+}
+if (!$noah->hasPermission(App\User::PERM_ONLY_ASSIGNED_TICKETS)) {
+    fwrite(fopen('php://stderr', 'w'), "Seed verify failed; expected Noah Patel to have assigned-only visibility.\n");
+    exit(1);
+}
+if (!$mia->hasManageMailboxPermission($support->id, App\Mailbox::ACCESS_PERM_SIGNATURE)) {
+    fwrite(fopen('php://stderr', 'w'), "Seed verify failed; expected Mia Chen to manage Northwind Support signatures.\n");
+    exit(1);
+}
+if (!DB::table('mailbox_user')->where('mailbox_id', $support->id)->where('user_id', $mia->id)->exists()
+    || DB::table('mailbox_user')->where('mailbox_id', $returns->id)->where('user_id', $mia->id)->exists()) {
+    fwrite(fopen('php://stderr', 'w'), "Seed verify failed; expected Mia on Support but not Returns.\n");
+    exit(1);
+}
+if (!DB::table('mailbox_user')->where('mailbox_id', $support->id)->where('user_id', $noah->id)->exists()
+    || !DB::table('mailbox_user')->where('mailbox_id', $returns->id)->where('user_id', $noah->id)->exists()) {
+    fwrite(fopen('php://stderr', 'w'), "Seed verify failed; expected Noah on Support and Returns for assigned-only search fixture.\n");
+    exit(1);
+}
+if (DB::table('conversations')->whereColumn('id', 'number')->exists()) {
+    fwrite(fopen('php://stderr', 'w'), "Seed verify failed; expected conversation ids to differ from visible ticket numbers.\n");
+    exit(1);
+}
+$mailboxOrder = DB::table('mailboxes')->orderBy('id')->pluck('name')->toArray();
+if ($mailboxOrder !== ['Northwind Support', 'Northwind Billing', 'Northwind Returns']) {
+    fwrite(fopen('php://stderr', 'w'), "Seed verify failed; expected non-alphabetical mailbox creation order.\n");
+    exit(1);
+}
+$replacementMatches = DB::table('conversations')
+    ->where('subject', 'like', '%replacement%')
+    ->pluck('user_id')
+    ->toArray();
+if (!in_array($mia->id, $replacementMatches) || !in_array($noah->id, $replacementMatches)) {
+    fwrite(fopen('php://stderr', 'w'), "Seed verify failed; expected replacement search fixtures assigned to Mia and Noah.\n");
+    exit(1);
+}
+
+echo "DB seed counts and scenario permissions OK: 3 mailboxes, 6 customers, 3 agents, 8 conversations.\n";
 PHP
 
     local cookie token page
@@ -197,13 +257,13 @@ PHP
 
 cmd_stop() {
     echo "==> Stopping FreeScout containers (preserving data)..."
-    IMAGE_TAG="${IMAGE_NAME}" CONTAINER_NAME="${CONTAINER_NAME}" PORT="${PORT}" \
+    IMAGE_TAG="${IMAGE_NAME}" CONTAINER_NAME="${CONTAINER_NAME}" PORT="${PORT}" APP_URL="${APP_URL}" \
         docker compose -f "${COMPOSE_FILE}" -p "${COMPOSE_PROJECT}" stop 2>/dev/null || true
     echo "==> Stopped."
 }
 
 cmd_logs() {
-    IMAGE_TAG="${IMAGE_NAME}" CONTAINER_NAME="${CONTAINER_NAME}" PORT="${PORT}" \
+    IMAGE_TAG="${IMAGE_NAME}" CONTAINER_NAME="${CONTAINER_NAME}" PORT="${PORT}" APP_URL="${APP_URL}" \
         docker compose -f "${COMPOSE_FILE}" -p "${COMPOSE_PROJECT}" logs --tail=100 -f
 }
 
