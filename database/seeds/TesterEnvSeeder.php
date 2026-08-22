@@ -8,7 +8,6 @@ use App\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
 
 class TesterEnvSeeder extends Seeder
@@ -94,7 +93,7 @@ class TesterEnvSeeder extends Seeder
                 'first_name' => $row[0],
                 'last_name' => $row[1],
                 'email' => $row[2],
-                'password' => Hash::make('TesterEnv123!'),
+                'password' => 'TesterEnv123!',
                 'role' => User::ROLE_USER,
                 'status' => User::STATUS_ACTIVE,
                 'job_title' => $row[3],
