@@ -50,9 +50,9 @@ if [ ! -f .env ]; then
     # (host.docker.internal is needed for browser MCP access from other containers)
     sed -i "s|^#APP_TRUSTED_HOSTS=.*||" .env 2>/dev/null || true
     if ! grep -q "^APP_TRUSTED_HOSTS=" .env; then
-        echo "APP_TRUSTED_HOSTS=localhost,host.docker.internal" >> .env
+        echo "APP_TRUSTED_HOSTS=localhost,host.docker.internal,172.17.0.1" >> .env
     else
-        sed -i "s|^APP_TRUSTED_HOSTS=.*|APP_TRUSTED_HOSTS=localhost,host.docker.internal|" .env
+        sed -i "s|^APP_TRUSTED_HOSTS=.*|APP_TRUSTED_HOSTS=localhost,host.docker.internal,172.17.0.1|" .env
     fi
 
     # Set DB config
@@ -126,9 +126,9 @@ else
     sed -i "s|^APP_URL=.*|APP_URL=${APP_URL}|" .env
     # Ensure APP_TRUSTED_HOSTS is set (backward compat for older deploys)
     if ! grep -q "^APP_TRUSTED_HOSTS=" .env; then
-        echo "APP_TRUSTED_HOSTS=localhost,host.docker.internal" >> .env
+        echo "APP_TRUSTED_HOSTS=localhost,host.docker.internal,172.17.0.1" >> .env
     else
-        sed -i "s|^APP_TRUSTED_HOSTS=.*|APP_TRUSTED_HOSTS=localhost,host.docker.internal|" .env
+        sed -i "s|^APP_TRUSTED_HOSTS=.*|APP_TRUSTED_HOSTS=localhost,host.docker.internal,172.17.0.1|" .env
     fi
     # Still clear caches to ensure consistency
     php artisan config:clear --no-interaction 2>/dev/null || true

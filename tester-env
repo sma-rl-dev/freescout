@@ -9,13 +9,27 @@ COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
 IMAGE_NAME="${IMAGE_TAG:-tester-env-freescout:dev}"
 CONTAINER_NAME="${CONTAINER_NAME:-tester-env-freescout}"
 PORT="${PORT:-8042}"
+COMMAND="${1:-help}"
+RUN_ID="default"
+if [ "$#" -gt 0 ]; then shift; fi
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --run-id) RUN_ID="$2"; shift 2 ;;
+        --port) PORT="$2"; shift 2 ;;
+        *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+if [[ ! "$RUN_ID" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
+    echo "Invalid run id: $RUN_ID" >&2
+    exit 2
+fi
 # Compute APP_URL from PORT so scenario runtime with --port auto works.
 # When scripts/rl-env allocates a random port, APP_URL must match so auth
 # redirects, CSP headers, and asset URLs all use the correct port.
-APP_URL="${APP_URL:-http://host.docker.internal:${PORT}}"
-DB_VOLUME="freescout-db-data"
-STORAGE_VOLUME="freescout-storage"
-COMPOSE_PROJECT="freescout"
+APP_URL="${APP_URL:-http://172.17.0.1:${PORT}}"
+COMPOSE_PROJECT="tester-env-freescout-${RUN_ID}"
+CONTAINER_NAME="tester-env-freescout-${RUN_ID}"
+export IMAGE_TAG="${IMAGE_NAME}" CONTAINER_NAME PORT APP_URL
 
 # Credentials
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@tester-env.local}"
@@ -23,7 +37,7 @@ ADMIN_PASS="${ADMIN_PASS:-TesterEnv123!}"
 
 usage() {
     cat <<EOF
-Usage: $0 {deploy|seed|verify|reset|stop|logs|status|help}
+Usage: $0 {deploy|seed|verify|reset|stop|logs|status|help} [--run-id ID] [--port PORT]
 
 Commands:
   deploy   Build image from source, start containers, initialize app
@@ -39,7 +53,7 @@ Environment:
   IMAGE_TAG       Docker image tag (default: tester-env-freescout:dev)
   CONTAINER_NAME  Container name (default: tester-env-freescout)
   PORT            Host port (default: 8042)
-  APP_URL         Application URL for redirects/CSP/assets (default: http://host.docker.internal:${PORT})
+   APP_URL         Application URL for redirects/CSP/assets (default: http://172.17.0.1:${PORT})
   ADMIN_EMAIL     Admin email (default: admin@tester-env.local)
   ADMIN_PASS      Admin password (default: TesterEnv123!)
 
@@ -76,7 +90,7 @@ cmd_deploy() {
 cmd_reset() {
     echo "==> Stopping FreeScout containers and removing volumes..."
     IMAGE_TAG="${IMAGE_NAME}" CONTAINER_NAME="${CONTAINER_NAME}" PORT="${PORT}" APP_URL="${APP_URL}" \
-        docker compose -f "${COMPOSE_FILE}" -p "${COMPOSE_PROJECT}" down -v 2>/dev/null || true
+        docker compose -f "${COMPOSE_FILE}" -p "${COMPOSE_PROJECT}" down -v
     # Clean .env so next deploy initializes fresh
     rm -f "${SCRIPT_DIR}/.env"
     echo "==> Reset complete. Run '$0 deploy' for a fresh start."
@@ -231,19 +245,19 @@ PHP
     local cookie token page
     cookie="$(mktemp)"
     page="$(mktemp)"
-    curl -fsS -c "${cookie}" "http://localhost:${PORT}/login" -o "${page}"
+    curl -fsS -c "${cookie}" "${APP_URL}/login" -o "${page}"
     token="$(sed -n 's/.*name="_token" value="\([^"]*\)".*/\1/p' "${page}")"
     if [ -z "${token}" ]; then
         echo "==> Could not extract CSRF token from login page."
         rm -f "${cookie}" "${page}"
         return 1
     fi
-    curl -fsS -b "${cookie}" -c "${cookie}" -X POST "http://localhost:${PORT}/login" \
+    curl -fsS -b "${cookie}" -c "${cookie}" -X POST "${APP_URL}/login" \
         --data-urlencode "_token=${token}" \
         --data-urlencode "email=${ADMIN_EMAIL}" \
         --data-urlencode "password=${ADMIN_PASS}" \
         -o /dev/null
-    curl -fsS -b "${cookie}" "http://localhost:${PORT}/mailboxes" -o "${page}"
+    curl -fsS -b "${cookie}" "${APP_URL}/mailboxes" -o "${page}"
     for text in "Northwind Support" "Northwind Billing" "Northwind Returns"; do
         if ! grep -q "${text}" "${page}"; then
             echo "==> Rendered mailboxes page missing '${text}'."
@@ -278,7 +292,7 @@ cmd_status() {
     fi
 }
 
-case "${1:-help}" in
+case "${COMMAND}" in
     deploy)  cmd_deploy ;;
     seed)    cmd_seed ;;
     verify)  cmd_verify ;;
