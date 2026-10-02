@@ -112,7 +112,14 @@ cmd_seed() {
         return 1
     fi
 
-    docker exec -i -u www-data "${CONTAINER_NAME}" php <<'PHP'
+    if [[ "${TESTER_ENV_SCENARIO:-}" == "freescout-search-hash-conversation-number-001" ]]; then
+        docker exec "${CONTAINER_NAME}" sh -c '
+            sed -i "/^APP_CUSTOM_NUMBER=/d" /var/www/html/.env
+            printf "\nAPP_CUSTOM_NUMBER=true\n" >> /var/www/html/.env
+            cd /var/www/html && php artisan config:clear --no-interaction'
+    fi
+
+    docker exec -i -u www-data -e TESTER_ENV_SCENARIO "${CONTAINER_NAME}" php <<'PHP'
 <?php
 chdir('/var/www/html');
 define('LARAVEL_START', microtime(true));
@@ -131,12 +138,33 @@ $kernel->bootstrap();
 require 'database/seeds/TesterEnvSeeder.php';
 try {
     (new TesterEnvSeeder())->run();
+    if (getenv('TESTER_ENV_SCENARIO') === 'freescout-bulk-shift-select-range-001') {
+        $original = App\Conversation::where('number', 7001)->firstOrFail();
+        $originalThread = App\Thread::where('conversation_id', $original->id)
+            ->where('type', App\Thread::TYPE_CUSTOMER)->firstOrFail();
+        foreach ([
+            [7009, 'Confirm rainfly dimensions for the trail expo', 'Please confirm the packed rainfly dimensions before our trail expo setup.'],
+            [7010, 'Arrange spare guy lines for the demo booth', 'We need spare guy lines for the Summit Cycles demo booth.'],
+        ] as $row) {
+            $conversation = $original->replicate();
+            $conversation->subject = $row[1];
+            $conversation->preview = $row[2];
+            $conversation->save();
+            DB::table('conversations')->where('id', $conversation->id)->update(['number' => $row[0]]);
+            $thread = $originalThread->replicate();
+            $thread->conversation_id = $conversation->id;
+            $thread->body = '<p>'.$row[2].'</p>';
+            $thread->message_id = '<northwind-'.$row[0].'@summit-cycles.example>';
+            $thread->save();
+        }
+        $original->mailbox->updateFoldersCounters();
+    }
 } catch (Throwable $e) {
     fwrite(fopen('php://stderr', 'w'), $e->getMessage()."\n");
     exit(1);
 }
 PHP
-    echo "==> Seed complete. Created 3 mailboxes, 6 customers, 3 agents, 8 conversations, and scenario permissions."
+    echo "==> Seed complete. Northwind helpdesk data and scenario permissions are ready."
 }
 
 cmd_verify() {
@@ -146,7 +174,7 @@ cmd_verify() {
         return 1
     fi
 
-    docker exec -i -u www-data "${CONTAINER_NAME}" php <<'PHP'
+    docker exec -i -u www-data -e TESTER_ENV_SCENARIO "${CONTAINER_NAME}" php <<'PHP'
 <?php
 chdir('/var/www/html');
 define('LARAVEL_START', microtime(true));
@@ -163,12 +191,18 @@ $app = require 'bootstrap/app.php';
 $kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
 $kernel->bootstrap();
 
+$rangeScenario = getenv('TESTER_ENV_SCENARIO') === 'freescout-bulk-shift-select-range-001';
+if (getenv('TESTER_ENV_SCENARIO') === 'freescout-search-hash-conversation-number-001'
+    && App\Conversation::numberFieldName() !== 'number') {
+    fwrite(fopen('php://stderr', 'w'), "Seed verify failed; custom visible ticket numbering is disabled.\n");
+    exit(1);
+}
 $checks = [
     'mailboxes' => [DB::table('mailboxes')->count(), 3],
     'customers' => [DB::table('customers')->count(), 6],
     'agents' => [DB::table('users')->where('role', App\User::ROLE_USER)->count(), 3],
-    'conversations' => [DB::table('conversations')->count(), 8],
-    'active_conversations' => [DB::table('conversations')->where('status', App\Conversation::STATUS_ACTIVE)->count(), 3],
+    'conversations' => [DB::table('conversations')->count(), $rangeScenario ? 10 : 8],
+    'active_conversations' => [DB::table('conversations')->where('status', App\Conversation::STATUS_ACTIVE)->count(), $rangeScenario ? 5 : 3],
     'pending_conversations' => [DB::table('conversations')->where('status', App\Conversation::STATUS_PENDING)->count(), 2],
     'closed_conversations' => [DB::table('conversations')->where('status', App\Conversation::STATUS_CLOSED)->count(), 2],
     'spam_conversations' => [DB::table('conversations')->where('status', App\Conversation::STATUS_SPAM)->count(), 1],
@@ -204,6 +238,11 @@ $noah = App\User::where('email', 'noah.patel@tester-env.local')->first();
 $support = App\Mailbox::where('name', 'Northwind Support')->first();
 $returns = App\Mailbox::where('name', 'Northwind Returns')->first();
 $billing = App\Mailbox::where('name', 'Northwind Billing')->first();
+if ($rangeScenario && DB::table('conversations')->where('mailbox_id', $support->id)
+    ->where('user_id', $mia->id)->where('status', App\Conversation::STATUS_ACTIVE)->count() !== 3) {
+    fwrite(fopen('php://stderr', 'w'), "Seed verify failed; expected three active conversations in the same Assigned folder.\n");
+    exit(1);
+}
 if (!$mia || !$noah || !$support || !$returns || !$billing) {
     fwrite(fopen('php://stderr', 'w'), "Seed verify failed; missing scenario user or mailbox fixtures.\n");
     exit(1);
@@ -248,7 +287,7 @@ if (!in_array($mia->id, $replacementMatches) || !in_array($noah->id, $replacemen
     exit(1);
 }
 
-echo "DB seed counts and scenario permissions OK: 3 mailboxes, 6 customers, 3 agents, 8 conversations.\n";
+echo "DB seed counts and scenario permissions OK.\n";
 PHP
 
     local cookie token page
