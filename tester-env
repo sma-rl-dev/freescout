@@ -91,6 +91,13 @@ cmd_reset() {
     echo "==> Stopping FreeScout containers and removing volumes..."
     IMAGE_TAG="${IMAGE_NAME}" CONTAINER_NAME="${CONTAINER_NAME}" PORT="${PORT}" APP_URL="${APP_URL}" \
         docker compose -f "${COMPOSE_FILE}" -p "${COMPOSE_PROJECT}" down -v
+    # Apache writes generated assets/cache into the owned source worktree.
+    # Restore the invoking user's ownership before rl-env removes that worktree.
+    docker run --rm --network none --entrypoint sh \
+        -v "${SCRIPT_DIR}:/source" "${IMAGE_NAME}" -c '
+        for path in /source/bootstrap/cache /source/public/css/builds /source/public/js/builds; do
+            if [ -d "$path" ]; then chown -R "$1:$2" "$path"; fi
+        done' sh "$(id -u)" "$(id -g)"
     # Clean .env so next deploy initializes fresh
     rm -f "${SCRIPT_DIR}/.env"
     echo "==> Reset complete. Run '$0 deploy' for a fresh start."
